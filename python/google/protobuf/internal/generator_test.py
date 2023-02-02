@@ -49,6 +49,7 @@ from google.protobuf import unittest_import_public_pb2
 from google.protobuf import unittest_mset_pb2
 from google.protobuf import unittest_mset_wire_format_pb2
 from google.protobuf import unittest_pb2
+from google.protobuf import unittest_retention_pb2
 from google.protobuf import unittest_custom_options_pb2
 from google.protobuf import unittest_no_generic_services_pb2
 
@@ -151,6 +152,18 @@ class GeneratorTest(unittest.TestCase):
     self.assertTrue(enum_options is not None)
     # TODO(gps): We really should test for the presence of the enum_opt1
     # extension and for its value to be set to -789.
+
+  def testOptionRetention(self):
+    options = unittest_retention_pb2.DESCRIPTOR.GetOptions()
+    self.assertTrue(options.HasExtension(unittest_retention_pb2.plain_option))
+    self.assertTrue(
+        options.HasExtension(unittest_retention_pb2.runtime_retention_option)
+    )
+    # Options that are explicitly marked RETENTION_SOURCE should not be
+    # present in the descriptors in the binary.
+    self.assertFalse(
+        options.HasExtension(unittest_retention_pb2.source_retention_option)
+    )
 
   def testNestedTypes(self):
     self.assertEqual(

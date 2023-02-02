@@ -64,6 +64,7 @@
 #include "absl/strings/substitute.h"
 #include "google/protobuf/compiler/python/helpers.h"
 #include "google/protobuf/compiler/python/pyi_generator.h"
+#include "google/protobuf/compiler/retention.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
 #include "google/protobuf/io/printer.h"
@@ -249,8 +250,7 @@ bool Generator::Generate(const FileDescriptor* file,
 
   std::string filename = GetFileName(file, ".py");
 
-  FileDescriptorProto fdp;
-  file_->CopyTo(&fdp);
+  FileDescriptorProto fdp = StripSourceRetentionOptions(*file_);
   fdp.SerializeToString(&file_descriptor_serialized_);
 
   if (!opensource_runtime_ && GeneratingDescriptorProto()) {
@@ -342,7 +342,7 @@ bool Generator::Generate(const FileDescriptor* file,
   FixAllDescriptorOptions();
 
   // Set serialized_start and serialized_end.
-  SetSerializedPbInterval();
+  SetSerializedPbInterval(fdp);
 
   printer_->Outdent();
   if (HasGenericServices(file)) {
@@ -1216,21 +1216,17 @@ std::string Generator::InternalPackage() const {
                              : "google3.net.google.protobuf.python.internal";
 }
 
-// Prints standard constructor arguments serialized_start and serialized_end.
+// Prints descriptor offsets _serialized_start and _serialized_end.
 // Args:
-//   descriptor: The cpp descriptor to have a serialized reference.
-//   proto: A proto
+//   descriptor_proto: The descriptor proto to have a serialized reference.
 // Example printer output:
-// serialized_start=41,
-// serialized_end=43,
-//
-template <typename DescriptorT, typename DescriptorProtoT>
-void Generator::PrintSerializedPbInterval(const DescriptorT& descriptor,
-                                          DescriptorProtoT& proto,
-                                          absl::string_view name) const {
-  descriptor.CopyTo(&proto);
+// _globals['_MYMESSAGE']._serialized_start=47
+// _globals['_MYMESSAGE']._serialized_end=76
+template <typename DescriptorProtoT>
+void Generator::PrintSerializedPbInterval(
+    const DescriptorProtoT& descriptor_proto, absl::string_view name) const {
   std::string sp;
-  proto.SerializeToString(&sp);
+  descriptor_proto.SerializeToString(&sp);
   int offset = file_descriptor_serialized_.find(sp);
   ABSL_CHECK_GE(offset, 0);
 
@@ -1254,43 +1250,47 @@ void PrintDescriptorOptionsFixingCode(absl::string_view descriptor,
 }
 }  // namespace
 
-void Generator::SetSerializedPbInterval() const {
+// Generates the start and end offsets for each entity in the serialized file
+// descriptor. The file argument must exactly match what was serialized into
+// file_descriptor_serialized_, and should already have had any
+// source-retention options stripped out. This is important because we need an
+// exact byte-for-byte match so that we can successfully find the correct
+// offsets in the serialized descriptors.
+void Generator::SetSerializedPbInterval(const FileDescriptorProto& file) const {
   // Top level enums.
   for (int i = 0; i < file_->enum_type_count(); ++i) {
-    EnumDescriptorProto proto;
     const EnumDescriptor& descriptor = *file_->enum_type(i);
-    PrintSerializedPbInterval(descriptor, proto,
+    PrintSerializedPbInterval(file.enum_type(i),
                               ModuleLevelDescriptorName(descriptor));
   }
 
   // Messages.
   for (int i = 0; i < file_->message_type_count(); ++i) {
-    SetMessagePbInterval(*file_->message_type(i));
+    SetMessagePbInterval(file.message_type(i), *file_->message_type(i));
   }
 
   // Services.
   for (int i = 0; i < file_->service_count(); ++i) {
-    ServiceDescriptorProto proto;
     const ServiceDescriptor& service = *file_->service(i);
-    PrintSerializedPbInterval(service, proto,
+    PrintSerializedPbInterval(file.service(i),
                               ModuleLevelServiceDescriptorName(service));
   }
 }
 
-void Generator::SetMessagePbInterval(const Descriptor& descriptor) const {
-  DescriptorProto message_proto;
-  PrintSerializedPbInterval(descriptor, message_proto,
+void Generator::SetMessagePbInterval(const DescriptorProto& message_proto,
+                                     const Descriptor& descriptor) const {
+  PrintSerializedPbInterval(message_proto,
                             ModuleLevelDescriptorName(descriptor));
 
   // Nested messages.
   for (int i = 0; i < descriptor.nested_type_count(); ++i) {
-    SetMessagePbInterval(*descriptor.nested_type(i));
+    SetMessagePbInterval(message_proto.nested_type(i),
+                         *descriptor.nested_type(i));
   }
 
   for (int i = 0; i < descriptor.enum_type_count(); ++i) {
-    EnumDescriptorProto proto;
     const EnumDescriptor& enum_des = *descriptor.enum_type(i);
-    PrintSerializedPbInterval(enum_des, proto,
+    PrintSerializedPbInterval(message_proto.enum_type(i),
                               ModuleLevelDescriptorName(enum_des));
   }
 }
