@@ -61,12 +61,13 @@
 #include "absl/strings/substitute.h"
 #include "google/protobuf/arena.h"
 #include "google/protobuf/descriptor.h"
+#include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/generated_message_reflection.h"
-#include "google/protobuf/message.h"
 #include "google/protobuf/io/coded_stream.h"
 #include "google/protobuf/io/io_win32.h"
 #include "google/protobuf/io/zero_copy_stream.h"
 #include "google/protobuf/io/zero_copy_stream_impl.h"
+#include "google/protobuf/message.h"
 #include "google/protobuf/test_util2.h"
 
 
@@ -1250,6 +1251,37 @@ std::string EncodeOverlongEnum(int number, bool use_packed) {
   }
 }
 
+std::string EncodeInt32Value(int number, int32_t value,
+                             int non_canonical_bytes) {
+  uint8_t buf[100];
+  uint8_t* p = buf;
+
+  p = internal::WireFormatLite::WriteInt32ToArray(number, value, p);
+  p = AddNonCanonicalBytes(SkipTag(buf), p, non_canonical_bytes);
+  return std::string(buf, p);
+}
+
+std::string EncodeInt64Value(int number, int64_t value, int non_canonical_bytes,
+                             bool use_packed = false) {
+  uint8_t buf[100];
+  uint8_t* p = buf;
+
+  if (use_packed) {
+    p = internal::WireFormatLite::WriteInt64NoTagToArray(value, p);
+    p = AddNonCanonicalBytes(buf, p, non_canonical_bytes);
+
+    std::string payload(buf, p);
+    p = buf;
+    p = internal::WireFormatLite::WriteStringToArray(number, payload, p);
+    return std::string(buf, p);
+
+  } else {
+    p = internal::WireFormatLite::WriteInt64ToArray(number, value, p);
+    p = AddNonCanonicalBytes(SkipTag(buf), p, non_canonical_bytes);
+    return std::string(buf, p);
+  }
+}
+
 std::string EncodeOtherField() {
   UNITTEST::EnumParseTester obj;
   obj.set_other_field(1);
@@ -1261,7 +1293,7 @@ TEST(MESSAGE_TEST_NAME, TestEnumParsers) {
 
   const auto other_field = EncodeOtherField();
 
-  // Encode a boolean field for many different cases and verify that it can be
+  // Encode an enum field for many different cases and verify that it can be
   // parsed as expected.
   // There are:
   //  - optional/repeated/packed fields
@@ -1361,6 +1393,50 @@ TEST(MESSAGE_TEST_NAME, TestEnumParsers) {
   }
 }
 
+TEST(MESSAGE_TEST_NAME, TestEnumParserForUnknownEnumValue) {
+  DynamicMessageFactory factory;
+  std::unique_ptr<Message> dynamic(
+      factory.GetPrototype(UNITTEST::EnumParseTester::descriptor())->New());
+
+  UNITTEST::EnumParseTester non_dynamic;
+
+  // For unknown enum values, for consistency we must include the
+  // int32_t enum value in the unknown field set, which might not be exactly the
+  // same as the input.
+  auto* descriptor = non_dynamic.descriptor();
+
+  for (bool use_dynamic : {false, true}) {
+    SCOPED_TRACE(use_dynamic);
+    for (int i = 0; i < descriptor->field_count(); ++i) {
+      const auto* field = descriptor->field(i);
+      if (field->name() == "other_field") continue;
+      SCOPED_TRACE(field->full_name());
+      for (bool use_packed : {false, true}) {
+        SCOPED_TRACE(use_packed);
+        if (!field->is_repeated() && use_packed) continue;
+
+        // -2 is an invalid enum value on all the tests here.
+        // We will encode -2 as a positive int64 that is equivalent to
+        // int32_t{-2} when truncated.
+        constexpr int64_t minus_2_non_canonical =
+            static_cast<int64_t>(static_cast<uint32_t>(int32_t{-2}));
+        static_assert(minus_2_non_canonical != -2, "");
+        std::string encoded = EncodeInt64Value(
+            field->number(), minus_2_non_canonical, 0, use_packed);
+
+        auto& obj = use_dynamic ? *dynamic : non_dynamic;
+        ASSERT_TRUE(obj.ParseFromString(encoded));
+
+        auto& unknown = obj.GetReflection()->GetUnknownFields(obj);
+        ASSERT_EQ(unknown.field_count(), 1);
+        EXPECT_EQ(unknown.field(0).number(), field->number());
+        EXPECT_EQ(unknown.field(0).type(), unknown.field(0).TYPE_VARINT);
+        EXPECT_EQ(unknown.field(0).varint(), int64_t{-2});
+      }
+    }
+  }
+}
+
 std::string EncodeBoolValue(int number, bool value, int non_canonical_bytes) {
   uint8_t buf[100];
   uint8_t* p = buf;
@@ -1432,16 +1508,6 @@ TEST(MESSAGE_TEST_NAME, TestBoolParsers) {
   }
 }
 
-std::string EncodeInt32Value(int number, int32_t value,
-                             int non_canonical_bytes) {
-  uint8_t buf[100];
-  uint8_t* p = buf;
-
-  p = internal::WireFormatLite::WriteInt32ToArray(number, value, p);
-  p = AddNonCanonicalBytes(SkipTag(buf), p, non_canonical_bytes);
-  return std::string(buf, p);
-}
-
 TEST(MESSAGE_TEST_NAME, TestInt32Parsers) {
   UNITTEST::Int32ParseTester obj;
 
@@ -1503,16 +1569,6 @@ TEST(MESSAGE_TEST_NAME, TestInt32Parsers) {
       }
     }
   }
-}
-
-std::string EncodeInt64Value(int number, int64_t value,
-                             int non_canonical_bytes) {
-  uint8_t buf[100];
-  uint8_t* p = buf;
-
-  p = internal::WireFormatLite::WriteInt64ToArray(number, value, p);
-  p = AddNonCanonicalBytes(SkipTag(buf), p, non_canonical_bytes);
-  return std::string(buf, p);
 }
 
 TEST(MESSAGE_TEST_NAME, TestInt64Parsers) {
