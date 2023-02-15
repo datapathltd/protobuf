@@ -964,27 +964,18 @@ static GPBUnknownFieldSet *GetOrMakeUnknownFields(GPBMessage *self) {
            extensionRegistry:(id<GPBExtensionRegistry>)extensionRegistry
                        error:(NSError **)errorPtr {
   if ((self = [self init])) {
-    @try {
-      [self mergeFromData:data extensionRegistry:extensionRegistry];
-      if (errorPtr) {
-        *errorPtr = nil;
-      }
-    } @catch (NSException *exception) {
+    if (![self mergeFromData:data extensionRegistry:extensionRegistry error:errorPtr]) {
       [self release];
       self = nil;
-      if (errorPtr) {
-        *errorPtr = ErrorFromException(exception);
-      }
-    }
 #ifdef DEBUG
-    if (self && !self.initialized) {
+    } else if (!self.initialized) {
       [self release];
       self = nil;
       if (errorPtr) {
         *errorPtr = MessageError(GPBMessageErrorCodeMissingRequiredField, nil);
       }
-    }
 #endif
+    }
   }
   return self;
 }
@@ -1995,9 +1986,30 @@ static GPBUnknownFieldSet *GetOrMakeUnknownFields(GPBMessage *self) {
 
 - (void)mergeFromData:(NSData *)data extensionRegistry:(id<GPBExtensionRegistry>)extensionRegistry {
   GPBCodedInputStream *input = [[GPBCodedInputStream alloc] initWithData:data];
-  [self mergeFromCodedInputStream:input extensionRegistry:extensionRegistry];
-  [input checkLastTagWas:0];
+  @try {
+    [self mergeFromCodedInputStream:input extensionRegistry:extensionRegistry];
+    [input checkLastTagWas:0];
+  } @finally {
+    [input release];
+  }
+}
+
+- (BOOL)mergeFromData:(NSData *)data
+    extensionRegistry:(nullable id<GPBExtensionRegistry>)extensionRegistry
+                error:(NSError **)errorPtr {
+  GPBCodedInputStream *input = [[GPBCodedInputStream alloc] initWithData:data];
+  @try {
+    [self mergeFromCodedInputStream:input extensionRegistry:extensionRegistry];
+    [input checkLastTagWas:0];
+  } @catch (NSException *exception) {
+    [input release];
+    if (errorPtr) {
+      *errorPtr = ErrorFromException(exception);
+    }
+    return NO;
+  }
   [input release];
+  return YES;
 }
 
 #pragma mark - Parse From Data Support
@@ -3231,7 +3243,10 @@ static void ResolveIvarSet(__unsafe_unretained GPBFieldDescriptor *field,
   if (self) {
     NSData *data = [aDecoder decodeObjectOfClass:[NSData class] forKey:kGPBDataCoderKey];
     if (data.length) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
       [self mergeFromData:data extensionRegistry:nil];
+#pragma clang diagnostic pop
     }
   }
   return self;
